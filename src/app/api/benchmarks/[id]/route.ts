@@ -7,6 +7,8 @@ import {
   buildBenchmark,
   getBenchmarkLogs,
   getBenchmarkInfo,
+  deleteBenchmarkImages,
+  getBenchmarkReadme,
 } from '@/lib/docker'
 import path from 'path'
 
@@ -26,6 +28,13 @@ export async function GET(
   const { id } = await params
   const benchmarksPath = getBenchmarksPath()
   const benchmarkPath = path.join(benchmarksPath, id)
+  
+  // Check for readme query param
+  const { searchParams } = new URL(request.url)
+  if (searchParams.get('readme') === 'true') {
+    const readme = await getBenchmarkReadme(id)
+    return NextResponse.json({ readme })
+  }
 
   try {
     const info = await getBenchmarkInfo(id, benchmarkPath)
@@ -53,7 +62,7 @@ export async function POST(
   const { action, port } = body
 
   try {
-    let result: { success: boolean; error?: string; ports?: Record<string, number> }
+    let result: { success: boolean; error?: string; ports?: Record<string, number>; deleted?: string[] }
 
     switch (action) {
       case 'start':
@@ -67,6 +76,9 @@ export async function POST(
         break
       case 'build':
         result = await buildBenchmark(id)
+        break
+      case 'deleteImage':
+        result = await deleteBenchmarkImages(id)
         break
       default:
         return NextResponse.json({ error: 'Invalid action' }, { status: 400 })

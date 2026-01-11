@@ -37,6 +37,10 @@ import {
   ExternalLink,
   BookOpen,
   Clock,
+  Trash2,
+  Tag,
+  Zap,
+  Download,
 } from 'lucide-react'
 import {
   Collapsible,
@@ -62,13 +66,17 @@ import ReactMarkdown from 'react-markdown'
 
 interface BenchmarkInfo {
   id: string
+  name: string
   path: string
   status: 'running' | 'stopped' | 'partial' | 'unknown'
   containers: ContainerInfo[]
   hasDockerCompose: boolean
   hasMakefile: boolean
   description?: string
+  level?: number
+  tags?: string[]
   readme?: string
+  hasImage?: boolean
 }
 
 interface ContainerInfo {
@@ -340,17 +348,60 @@ export default function DashboardPage() {
     }
   }
 
-  const handleViewReadme = (benchmark: BenchmarkInfo) => {
-    if (benchmark.readme) {
-      setSelectedReadme({ id: benchmark.id, content: benchmark.readme })
-      setReadmeDialogOpen(true)
-    } else {
-      toast.info('No README available for this benchmark')
+  const handleViewReadme = async (benchmark: BenchmarkInfo) => {
+    // Load README on-demand
+    setSelectedReadme({ id: benchmark.id, content: 'Loading...' })
+    setReadmeDialogOpen(true)
+    
+    try {
+      const response = await fetch(`/api/benchmarks/${benchmark.id}?readme=true`)
+      const data = await response.json()
+      if (data.readme) {
+        setSelectedReadme({ id: benchmark.id, content: data.readme })
+      } else {
+        setSelectedReadme({ id: benchmark.id, content: 'No README available for this benchmark.' })
+      }
+    } catch {
+      setSelectedReadme({ id: benchmark.id, content: 'Failed to load README.' })
     }
   }
 
+  const handleDeleteImage = async (benchmarkId: string) => {
+    setActionLoading((prev) => ({ ...prev, [benchmarkId]: 'deleteImage' }))
+    try {
+      const response = await fetch(`/api/benchmarks/${benchmarkId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'deleteImage' }),
+      })
+      const data = await response.json()
+      if (data.success) {
+        if (data.deleted?.length > 0) {
+          toast.success(`Deleted ${data.deleted.length} image(s) for ${benchmarkId}`)
+        } else {
+          toast.info(`No images found for ${benchmarkId}`)
+        }
+        fetchBenchmarks()
+      } else {
+        toast.error(data.error || `Failed to delete images for ${benchmarkId}`)
+      }
+    } catch (error) {
+      console.error('Delete image error:', error)
+      toast.error(`Failed to delete images for ${benchmarkId}`)
+    } finally {
+      setActionLoading((prev) => {
+        const newState = { ...prev }
+        delete newState[benchmarkId]
+        return newState
+      })
+    }
+  }
+
+  const [pullLoading, setPullLoading] = useState(false)
+
   const handlePullBenchmarks = async () => {
-    toast.info('Pulling latest benchmarks...')
+    setPullLoading(true)
+    toast.info('Pulling latest benchmarks...', { duration: 10000 })
     try {
       const response = await fetch('/api/benchmarks', {
         method: 'POST',
@@ -359,7 +410,7 @@ export default function DashboardPage() {
       })
       const data = await response.json()
       if (data.success) {
-        toast.success('Benchmarks updated successfully')
+        toast.success('Benchmarks updated successfully!')
         fetchBenchmarks()
       } else {
         toast.error(data.error || 'Failed to pull benchmarks')
@@ -367,6 +418,8 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Pull error:', error)
       toast.error('Failed to pull benchmarks')
+    } finally {
+      setPullLoading(false)
     }
   }
 
@@ -649,9 +702,14 @@ export default function DashboardPage() {
                 size="sm"
                 onClick={handlePullBenchmarks}
                 className="gap-2"
+                disabled={pullLoading}
               >
-                <RefreshCw className="h-4 w-4" />
-                Pull
+                {pullLoading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {pullLoading ? 'Pulling...' : 'Pull'}
               </Button>
               <Button
                 variant="outline"
@@ -702,8 +760,9 @@ export default function DashboardPage() {
                   </div>
                 ) : filteredBenchmarks.length === 0 ? (
                   <div className="text-center py-12 text-muted-foreground">
-                    <Box className="h-12 w-12 mx-auto mb-4 opacity-50" />
-                    <p>No benchmarks found</p>
+                    <Download className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                    <p className="font-medium">No benchmarks found</p>
+                    <p className="text-sm mt-2">Click the <span className="font-semibold">Pull</span> button to download benchmarks</p>
                   </div>
                 ) : (
                   <div className="space-y-2">
@@ -834,6 +893,25 @@ export default function DashboardPage() {
                                   </TooltipTrigger>
                                   <TooltipContent>README</TooltipContent>
                                 </Tooltip>
+
+                                <Tooltip>
+                                  <TooltipTrigger asChild>
+                                    <Button
+                                      variant="ghost"
+                                      size="icon"
+                                      className="h-8 w-8 text-red-500 hover:text-red-600 hover:bg-red-100 dark:hover:bg-red-900/20"
+                                      onClick={() => handleDeleteImage(benchmark.id)}
+                                      disabled={!!actionLoading[benchmark.id]}
+                                    >
+                                      {actionLoading[benchmark.id] === 'deleteImage' ? (
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="h-4 w-4" />
+                                      )}
+                                    </Button>
+                                  </TooltipTrigger>
+                                  <TooltipContent>Delete Images</TooltipContent>
+                                </Tooltip>
                               </div>
                               <div className="flex items-center">
                                 {expandedBenchmarks.has(benchmark.id) ? (
@@ -848,6 +926,42 @@ export default function DashboardPage() {
                           <CollapsibleContent>
                             <div className="px-4 pb-4 pt-0 border-t">
                               <div className="pt-4 space-y-4">
+                                {/* Benchmark Info from benchmark.yaml */}
+                                {(benchmark.description || benchmark.level || benchmark.tags?.length) && (
+                                  <div className="p-3 rounded-lg bg-muted/30 space-y-2">
+                                    {benchmark.name && benchmark.name !== benchmark.id && (
+                                      <div>
+                                        <span className="text-xs text-muted-foreground">Name:</span>
+                                        <p className="text-sm font-medium">{benchmark.name}</p>
+                                      </div>
+                                    )}
+                                    {benchmark.description && (
+                                      <div>
+                                        <span className="text-xs text-muted-foreground">Description:</span>
+                                        <p className="text-sm">{benchmark.description}</p>
+                                      </div>
+                                    )}
+                                    <div className="flex flex-wrap gap-4 text-sm">
+                                      {benchmark.level && (
+                                        <div className="flex items-center gap-1">
+                                          <Zap className="h-3 w-3 text-yellow-500" />
+                                          <span className="text-muted-foreground">Level:</span>
+                                          <Badge variant="outline" className="text-xs">{benchmark.level}</Badge>
+                                        </div>
+                                      )}
+                                      {benchmark.tags && benchmark.tags.length > 0 && (
+                                        <div className="flex items-center gap-1 flex-wrap">
+                                          <Tag className="h-3 w-3 text-blue-500" />
+                                          <span className="text-muted-foreground">Tags:</span>
+                                          {benchmark.tags.map((tag, idx) => (
+                                            <Badge key={idx} variant="secondary" className="text-xs">{tag}</Badge>
+                                          ))}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+                                )}
+
                                 {/* Benchmark Details */}
                                 <div className="grid grid-cols-2 gap-4 text-sm">
                                   <div>

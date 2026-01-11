@@ -19,6 +19,8 @@ export interface BenchmarkInfo {
   name: string
   path: string
   description?: string
+  level?: number
+  tags?: string[]
   cwe?: string
   vulnerability?: string
   readme?: string
@@ -28,6 +30,7 @@ export interface BenchmarkInfo {
   status: 'stopped' | 'running' | 'building' | 'error' | 'partial' | 'unknown'
   ports: Record<string, string[]>
   containers: ContainerInfo[]
+  hasImage?: boolean
 }
 
 export interface ContainerInfo {
@@ -83,23 +86,49 @@ function getBenchmarksPath(): string {
   return process.env.BENCHMARKS_PATH || path.join(process.cwd(), '..', 'validation-benchmarks', 'benchmarks')
 }
 
+// Check if benchmarks are available
+export async function isBenchmarksCloned(): Promise<boolean> {
+  const benchmarksPath = getBenchmarksPath()
+  try {
+    const entries = await fs.readdir(benchmarksPath)
+    return entries.some(e => e.startsWith('XBEN-'))
+  } catch {
+    return false
+  }
+}
+
 export async function listBenchmarks(): Promise<BenchmarkInfo[]> {
   const benchmarksPath = getBenchmarksPath()
 
   try {
+    // Ensure directory exists
+    await fs.mkdir(benchmarksPath, { recursive: true })
+    
     const entries = await fs.readdir(benchmarksPath, { withFileTypes: true })
-    const benchmarks: BenchmarkInfo[] = []
-
-    for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.startsWith('XBEN-')) {
+    const benchmarkDirs = entries.filter(e => e.isDirectory() && e.name.startsWith('XBEN-'))
+    
+    // Get all containers and images ONCE for all benchmarks (much faster!)
+    const [containers, images] = await Promise.all([
+      docker.listContainers({ all: true }).catch(() => []),
+      docker.listImages().catch(() => []),
+    ])
+    
+    // Process benchmarks in parallel for speed
+    const benchmarks = await Promise.all(
+      benchmarkDirs.map(entry => {
         const benchmarkPath = path.join(benchmarksPath, entry.name)
-        const info = await getBenchmarkInfo(entry.name, benchmarkPath)
-        benchmarks.push(info)
-      }
-    }
+        return getBenchmarkInfoFast(entry.name, benchmarkPath, containers, images)
+      })
+    )
 
-    // Sort by name
-    benchmarks.sort((a, b) => a.name.localeCompare(b.name))
+    // Sort by numeric ID (XBEN-001-24, XBEN-002-24, etc.)
+    benchmarks.sort((a, b) => {
+      // Extract number from XBEN-XXX-YY format
+      const numA = parseInt(a.id.match(/XBEN-(\d+)/)?.[1] || '0')
+      const numB = parseInt(b.id.match(/XBEN-(\d+)/)?.[1] || '0')
+      return numA - numB
+    })
+    
     return benchmarks
   } catch (error) {
     console.error('Error listing benchmarks:', error)
@@ -108,6 +137,21 @@ export async function listBenchmarks(): Promise<BenchmarkInfo[]> {
 }
 
 export async function getBenchmarkInfo(name: string, benchmarkPath: string): Promise<BenchmarkInfo> {
+  // For single benchmark info, fetch containers and images
+  const [containers, images] = await Promise.all([
+    docker.listContainers({ all: true }).catch(() => []),
+    docker.listImages().catch(() => []),
+  ])
+  return getBenchmarkInfoFast(name, benchmarkPath, containers, images)
+}
+
+// Fast version that reuses pre-fetched containers and images
+async function getBenchmarkInfoFast(
+  name: string, 
+  benchmarkPath: string,
+  allContainers: Docker.ContainerInfo[],
+  allImages: Docker.ImageInfo[]
+): Promise<BenchmarkInfo> {
   const info: BenchmarkInfo = {
     id: name,
     name,
@@ -118,117 +162,91 @@ export async function getBenchmarkInfo(name: string, benchmarkPath: string): Pro
     status: 'stopped',
     ports: {},
     containers: [],
+    hasImage: false,
   }
 
-  // Check for docker-compose.yml
-  try {
-    await fs.access(path.join(benchmarkPath, 'docker-compose.yml'))
-    info.hasDockerCompose = true
+  // Check for docker-compose.yml and Makefile in parallel
+  const [hasCompose, hasMake] = await Promise.all([
+    fs.access(path.join(benchmarkPath, 'docker-compose.yml')).then(() => true).catch(() => false),
+    fs.access(path.join(benchmarkPath, 'Makefile')).then(() => true).catch(() => false),
+  ])
+  
+  info.hasDockerCompose = hasCompose
+  info.hasMakefile = hasMake
 
-    // Read docker-compose.yml to get services
-    const composeContent = await fs.readFile(
-      path.join(benchmarkPath, 'docker-compose.yml'),
-      'utf-8'
-    )
-
-    // Simple service extraction from YAML
-    const serviceMatches = composeContent.match(/^  (\w+):/gm)
-    if (serviceMatches) {
-      info.services = serviceMatches.map(s => s.trim().replace(':', ''))
-    }
-  } catch {
-    // No docker-compose.yml
-  }
-
-  // Check for Makefile
-  try {
-    await fs.access(path.join(benchmarkPath, 'Makefile'))
-    info.hasMakefile = true
-  } catch {
-    // No Makefile
-  }
-
-  // Read benchmark.yaml or benchmark.json for metadata
+  // Read benchmark.yaml for metadata (skip README for speed - only load on demand)
   try {
     const yamlPath = path.join(benchmarkPath, 'benchmark.yaml')
     const content = await fs.readFile(yamlPath, 'utf-8')
 
-    // Simple YAML parsing for key fields
-    const descMatch = content.match(/description:\s*["']?([^"'\n]+)["']?/i)
-    const cweMatch = content.match(/cwe:\s*["']?([^"'\n]+)["']?/i)
-    const vulnMatch = content.match(/vulnerability[_-]?type:\s*["']?([^"'\n]+)["']?/i)
-
-    if (descMatch) info.description = descMatch[1].trim()
-    if (cweMatch) info.cwe = cweMatch[1].trim()
-    if (vulnMatch) info.vulnerability = vulnMatch[1].trim()
-  } catch {
-    // Try JSON
-    try {
-      const jsonPath = path.join(benchmarkPath, 'benchmark.json')
-      const content = await fs.readFile(jsonPath, 'utf-8')
-      const data = JSON.parse(content)
-      info.description = data.description
-      info.cwe = data.cwe
-      info.vulnerability = data.vulnerability_type || data.vulnerability
-    } catch {
-      // No metadata file
+    // Parse YAML fields
+    const nameMatch = content.match(/^name:\s*(.+)$/m)
+    const levelMatch = content.match(/^level:\s*(\d+)/m)
+    const tagsMatch = content.match(/^tags:\s*\n((?:- .+\n?)+)/m)
+    
+    // Parse description from content section
+    const descMatch = content.match(/kind:\s*description[\s\S]*?content:\s*["']?([^"'\n]+(?:\n\s+[^"'\n]+)*)["']?/i)
+    
+    if (nameMatch) info.name = nameMatch[1].trim()
+    if (levelMatch) info.level = parseInt(levelMatch[1])
+    if (tagsMatch) {
+      const tagLines = tagsMatch[1].match(/- (.+)/g)
+      if (tagLines) {
+        info.tags = tagLines.map(t => t.replace(/^- /, '').trim())
+      }
     }
-  }
-
-  // Read README.md for instructions
-  try {
-    const readmePath = path.join(benchmarkPath, 'README.md')
-    const readmeContent = await fs.readFile(readmePath, 'utf-8')
-    info.readme = readmeContent
+    if (descMatch) {
+      info.description = descMatch[1].replace(/\n\s+/g, ' ').trim()
+    }
   } catch {
-    // No README file
+    // No metadata file - that's ok
   }
 
-  // Get container status
-  try {
-    const containers = await docker.listContainers({ all: true })
-    const benchmarkContainers = containers.filter(c =>
-      c.Labels?.['com.docker.compose.project'] === name.toLowerCase() ||
-      c.Names.some(n => n.includes(name.toLowerCase()))
-    )
+  // Get container status from pre-fetched list
+  const benchmarkContainers = allContainers.filter(c =>
+    c.Labels?.['com.docker.compose.project'] === name.toLowerCase() ||
+    c.Names.some(n => n.includes(name.toLowerCase()))
+  )
 
-    info.containers = benchmarkContainers.map(c => {
-      const portMappings = c.Ports.map(p => ({ private: p.PrivatePort, public: p.PublicPort || 0 }))
-      return {
-        id: c.Id.substring(0, 12),
-        name: c.Names[0]?.replace('/', '') || '',
-        image: c.Image,
-        status: c.Status,
-        state: c.State,
-        ports: portMappings.filter(p => p.public).map(p => `${p.public}:${p.private}`),
-        portMappings,
-        created: c.Created,
+  info.containers = benchmarkContainers.map(c => {
+    const portMappings = c.Ports.map(p => ({ private: p.PrivatePort, public: p.PublicPort || 0 }))
+    return {
+      id: c.Id.substring(0, 12),
+      name: c.Names[0]?.replace('/', '') || '',
+      image: c.Image,
+      status: c.Status,
+      state: c.State,
+      ports: portMappings.filter(p => p.public).map(p => `${p.public}:${p.private}`),
+      portMappings,
+      created: c.Created,
+    }
+  })
+
+  // Determine overall status
+  if (info.containers.length === 0) {
+    info.status = 'stopped'
+  } else if (info.containers.every(c => c.state === 'running')) {
+    info.status = 'running'
+  } else if (info.containers.some(c => c.state === 'running')) {
+    info.status = 'partial'
+  } else {
+    info.status = 'stopped'
+  }
+
+  // Extract ports
+  info.containers.forEach(c => {
+    c.portMappings.forEach(p => {
+      if (p.public) {
+        if (!info.ports[p.private]) info.ports[p.private] = []
+        info.ports[p.private].push(String(p.public))
       }
     })
+  })
 
-    // Determine overall status
-    if (info.containers.length === 0) {
-      info.status = 'stopped'
-    } else if (info.containers.every(c => c.state === 'running')) {
-      info.status = 'running'
-    } else if (info.containers.some(c => c.state === 'running')) {
-      info.status = 'partial'
-    } else {
-      info.status = 'stopped'
-    }
-
-    // Extract ports
-    info.containers.forEach(c => {
-      c.portMappings.forEach(p => {
-        if (p.public) {
-          if (!info.ports[p.private]) info.ports[p.private] = []
-          info.ports[p.private].push(String(p.public))
-        }
-      })
-    })
-  } catch (error) {
-    console.error(`Error getting container status for ${name}:`, error)
-  }
+  // Check if Docker image exists from pre-fetched list
+  info.hasImage = allImages.some(img => 
+    img.RepoTags?.some(tag => tag.toLowerCase().includes(name.toLowerCase()))
+  )
 
   return info
 }
@@ -503,18 +521,71 @@ export async function pullBenchmarks(): Promise<{ success: boolean; output: stri
   
   // Get git repo path - use env var if available, otherwise try parent of benchmarks
   const gitRepoPath = process.env.GIT_REPO_PATH || path.join(benchmarksPath, '..')
+  const gitRepoUrl = process.env.GIT_REPO_URL || 'https://github.com/xbow-engineering/validation-benchmarks.git'
 
   try {
-    // Check if it's a git repo
-    await fs.access(path.join(gitRepoPath, '.git'))
-
-    const { stdout, stderr } = await execAsync('git pull', {
-      cwd: gitRepoPath,
-    })
-
-    return { success: true, output: stdout + stderr }
+    // Check if it's already a git repo
+    try {
+      await fs.access(path.join(gitRepoPath, '.git'))
+      
+      // Git repo exists, do pull
+      const { stdout, stderr } = await execAsync('git pull --progress', {
+        cwd: gitRepoPath,
+      })
+      return { success: true, output: stdout + stderr }
+    } catch {
+      // No git repo - need to clone
+      // Make sure parent directory exists
+      await fs.mkdir(gitRepoPath, { recursive: true })
+      
+      // Clone the repo
+      const { stdout, stderr } = await execAsync(`git clone --progress ${gitRepoUrl} "${gitRepoPath}"`, {
+        cwd: path.dirname(gitRepoPath),
+      })
+      return { success: true, output: `Cloned repository successfully!\n${stdout}${stderr}` }
+    }
   } catch (error) {
-    return { success: false, output: `Error pulling benchmarks: ${error}` }
+    return { success: false, output: `Error: ${error}` }
+  }
+}
+
+export async function deleteBenchmarkImages(benchmarkId: string): Promise<{ success: boolean; deleted: string[]; error?: string }> {
+  const deleted: string[] = []
+  
+  try {
+    const images = await docker.listImages()
+    
+    for (const image of images) {
+      const matchingTag = image.RepoTags?.find(tag => 
+        tag.toLowerCase().includes(benchmarkId.toLowerCase())
+      )
+      
+      if (matchingTag) {
+        try {
+          const dockerImage = docker.getImage(image.Id)
+          await dockerImage.remove({ force: true })
+          deleted.push(matchingTag)
+        } catch (e) {
+          console.error(`Failed to delete image ${matchingTag}:`, e)
+        }
+      }
+    }
+    
+    return { success: true, deleted }
+  } catch (error) {
+    return { success: false, deleted, error: String(error) }
+  }
+}
+
+// Load README on-demand (called when user expands a benchmark)
+export async function getBenchmarkReadme(benchmarkId: string): Promise<string | null> {
+  const benchmarksPath = getBenchmarksPath()
+  const readmePath = path.join(benchmarksPath, benchmarkId, 'README.md')
+  
+  try {
+    return await fs.readFile(readmePath, 'utf-8')
+  } catch {
+    return null
   }
 }
 
