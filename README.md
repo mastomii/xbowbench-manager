@@ -1,39 +1,49 @@
 # XBowBench Manager
 
-A web-based dashboard for managing XBowBench security benchmarks. Built with Next.js 16.
+A modern web-based dashboard for managing XBowBench security benchmarks. Built with **Next.js 15** and **shadcn/ui**.
 
-## Features
+<p align="center">
+  <img src="docs/images/login.png" alt="XBowBench Manager Login" width="100%">
+</p>
 
-- 📊 **Dashboard Overview**: View all benchmarks with status indicators
-- 🐳 **Docker Management**: Start, stop, restart, and build benchmark containers
-- 📝 **Build Logs**: View Docker Compose build logs for each benchmark
-- 📜 **Container Logs**: View individual container logs in real-time
-- 🖥️ **Shell Access**: Execute commands directly inside running containers
-- 📖 **README Viewer**: View benchmark documentation with Markdown rendering
-- 🔗 **Quick Access Links**: One-click access to web-based benchmark UIs
-- 📈 **System Stats**: CPU, Memory, Disk usage monitoring
-- 🎨 **Dark/Light Mode**: Theme toggle support
-- 🔐 **Authentication**: Secure login with JWT tokens
+<p align="center">
+  <img src="docs/images/dashboard.png" alt="XBowBench Manager Dashboard" width="100%">
+</p>
 
-## System Requirements
+## ✨ Features
 
-- Docker 20.10+
-- Node.js 22+ (for non-Docker deployment)
-- Access to Docker socket
+| Feature | Description |
+|---------|-------------|
+| 📊 **Dashboard Overview** | View all 100+ benchmarks with real-time status indicators |
+| 🐳 **Docker Management** | Start, stop, restart, and build benchmark containers with one click |
+| 📝 **Build Logs** | View Docker Compose build logs for each benchmark |
+| 📜 **Container Logs** | View individual container logs in real-time |
+| 🖥️ **Shell Access** | Execute commands directly inside running containers |
+| 📖 **README Viewer** | View benchmark documentation with Markdown rendering |
+| 🔗 **Quick Access Links** | One-click access to web-based benchmark UIs |
+| 📈 **System Stats** | Real-time CPU, Memory, Disk usage monitoring |
+| 🎨 **Dark/Light Mode** | Theme toggle support |
+| 🔐 **Authentication** | Secure login with JWT tokens |
+| 🔄 **Git Integration** | Pull latest benchmarks from repository |
+| 🛠️ **Auto Fix** | Automatically fix benchmark configurations |
 
-## Quick Start with Docker (Recommended)
+<p align="center">
+  <img src="docs/images/benchmark-details.png" alt="Benchmark Details" width="100%">
+</p>
+
+## 🚀 Quick Start with Docker (Recommended)
 
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/your-repo/xbowbench-manager.git
-cd xbowbench-manager
+git clone https://github.com/your-repo/xbowbench.git
+cd xbowbench
 ```
 
 ### 2. Create environment file
 
 ```bash
-cp .env.docker .env
+cp .env.example .env
 ```
 
 Edit `.env` with your configuration:
@@ -43,7 +53,6 @@ PORT=3000
 ADMIN_USERNAME=admin
 ADMIN_PASSWORD=your-secure-password
 JWT_SECRET=your-super-secret-jwt-key-minimum-32-characters
-BENCHMARKS_PATH=/path/to/your/benchmarks
 APP_ACCESS=http://your-server-ip
 ```
 
@@ -67,7 +76,7 @@ docker compose logs -f
 docker compose down
 ```
 
-## Manual Installation
+## 📦 Manual Installation
 
 ### 1. Install dependencies
 
@@ -95,13 +104,15 @@ npm run build
 npm start
 ```
 
-## Development
+## 🔧 Development
 
 ```bash
 npm run dev
 ```
 
-## Environment Variables
+Open [http://localhost:3000](http://localhost:3000) to view the app.
+
+## ⚙️ Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -113,34 +124,41 @@ npm run dev
 | `DOCKER_SOCKET_PATH` | Docker socket path | `/var/run/docker.sock` |
 | `APP_ACCESS` | Base URL for benchmark links | `http://localhost` |
 
-## Docker Image Size
+## 🐳 Docker Image
 
 The production Docker image uses multi-stage builds with Node.js Alpine base:
 
 - **Image Size**: ~340MB
 - **Content Size**: ~82MB
 
-## Architecture
+## 📁 Project Structure
 
 ```
-xbowbench-manager/
+xbowbench/
 ├── src/
-│   ├── app/              # Next.js App Router
-│   │   ├── api/          # API routes
-│   │   ├── dashboard/    # Main dashboard page
-│   │   └── login/        # Authentication page
-│   ├── components/       # React components
-│   │   └── ui/           # shadcn/ui components
-│   └── lib/              # Utility functions
-│       ├── auth.ts       # Authentication logic
-│       ├── docker.ts     # Docker integration
-│       └── fixer.ts      # Benchmark fixer
-├── Dockerfile            # Multi-stage Docker build
-├── docker-compose.yml    # Docker Compose configuration
-└── .env.example          # Environment template
+│   ├── app/                 # Next.js App Router
+│   │   ├── api/             # API routes
+│   │   │   ├── auth/        # Authentication endpoints
+│   │   │   ├── benchmarks/  # Benchmark management
+│   │   │   ├── containers/  # Container logs & exec
+│   │   │   ├── docker/      # Docker info & stats
+│   │   │   └── fix/         # Benchmark fixer
+│   │   ├── dashboard/       # Main dashboard page
+│   │   └── login/           # Authentication page
+│   ├── components/          # React components
+│   │   └── ui/              # shadcn/ui components
+│   └── lib/                 # Utility functions
+│       ├── auth.ts          # Authentication logic
+│       ├── docker.ts        # Docker integration
+│       └── fixer.ts         # Benchmark fixer
+├── docs/
+│   └── images/              # Documentation images
+├── Dockerfile               # Multi-stage Docker build
+├── docker-compose.yml       # Docker Compose configuration
+└── .env.example             # Environment template
 ```
 
-## API Endpoints
+## 🔌 API Endpoints
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
@@ -156,13 +174,19 @@ xbowbench-manager/
 | `/api/docker` | GET | Get Docker and system info |
 | `/api/fix` | POST | Fix benchmark configurations |
 
-## Security Notes
+## 🔒 Security Notes
 
 - The application requires Docker socket access for container management
 - Use strong passwords and JWT secrets in production
 - Consider using a reverse proxy (nginx) with SSL for production deployments
 - The Docker socket is mounted read-only where possible
 
-## License
+## 📋 System Requirements
+
+- Docker 20.10+
+- Node.js 22+ (for non-Docker deployment)
+- Access to Docker socket
+
+## 📄 License
 
 MIT
